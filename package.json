@@ -1,0 +1,9 @@
+{
+  "name": "ghar-saathi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "House Owner rental management app (Streamlit + SQLite, local storage)",
+  "scripts": {
+    "dev": "./.venv/bin/streamlit run app.py --server.port ${PORT:-3000} --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false"
+  }
+}
