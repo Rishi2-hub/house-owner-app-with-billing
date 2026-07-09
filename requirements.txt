@@ -3,4 +3,4 @@ nepali-datetime>=1.0.8
 pillow>=10.0
 pandas>=2.0
 fpdf2>=2.8
-
+firebase-admin
