@@ -49,7 +49,7 @@ class _PDF(FPDF):
         self.cell(
             0,
             10,
-            f"Generated on {nep_date} ({eng_date})   •   Page {self.page_no()}",
+            f"Generated on {nep_date} ({eng_date})   -   Page {self.page_no()}",
             align="C",
         )
 
@@ -453,4 +453,4 @@ def generate_year_summary(year, monthly_rows, totals):
         ln=True,
     )
 
-    return bytes(pdf.output())    
+    return bytes(pdf.output())
