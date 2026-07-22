@@ -74,7 +74,16 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
     month = bill["month_ad"]
 
     eng_month = cal.english_month_label(year, month)
-    nep_month = cal.nepali_month_label_for(year, month)
+
+    # Prefer the BS year/month actually selected when the bill was saved,
+    # since BS months don't align with AD month boundaries and recalculating
+    # from year_ad/month_ad alone can land on the wrong BS month. Older bills
+    # saved before this fix won't have bs_year/bs_month stored, so fall back
+    # to the recalculated version for those.
+    if bill.get("bs_year") and bill.get("bs_month"):
+        nep_month = cal.nepali_month_label(bill["bs_year"], bill["bs_month"])
+    else:
+        nep_month = cal.nepali_month_label_for(year, month)
 
     pdf = _PDF()
     pdf.set_auto_page_break(True, margin=18)
@@ -151,10 +160,9 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(*DARK)
 
-    water_total = (
-        (bill.get("water_units") or 0)
-        * (bill.get("water_rate") or 0)
-    )
+    water_total = bill.get("water_amount")
+    if water_total is None:
+        water_total = (bill.get("water_units") or 0) * (bill.get("water_rate") or 0)
 
     elec_total = (
         (bill.get("electricity_units") or 0)
@@ -169,7 +177,7 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
         ),
         (
             "Water",
-            f'{bill.get("water_units",0)} x {_money(bill.get("water_rate",0))}',
+            "Fixed price",
             _money(water_total),
         ),
         (
@@ -218,11 +226,36 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
 
     pdf.ln(5)
 
+    previous_reading = bill.get("previous_meter_reading") or 0
+    current_reading = bill.get("current_meter_reading")
+    if current_reading is None:
+        current_reading = bill.get("electricity_units") or 0
+    _kv_row(pdf, "Previous Meter Reading", f"{previous_reading:,.0f}")
+    _kv_row(pdf, "Current Meter Reading", f"{current_reading:,.0f}")
+    _kv_row(pdf, "Total Units Used", f'{bill.get("electricity_units") or 0:,.0f}')
+    _kv_row(pdf, "Past Months Due", _money(bill.get("past_due_amount") or 0))
+    _kv_row(pdf, "Advance Amount", _money(bill.get("advance_amount") or 0))
+
+    amount_paid = bill.get("amount_paid")
+    if amount_paid is None:
+        amount_paid = bill_total if bill.get("paid") else 0
+    remaining_due = max(0, bill_total - amount_paid)
+    customer_credit = max(0, amount_paid - bill_total)
+    _kv_row(pdf, "Amount Paid", _money(amount_paid), True)
+    _kv_row(pdf, "Remaining Due", _money(remaining_due), True)
+    if customer_credit:
+        _kv_row(pdf, "Customer Credit", _money(customer_credit), True)
+
+    pdf.ln(5)
+
     pdf.set_font("Helvetica","B",12)
 
-    if bill["paid"]:
+    if amount_paid >= bill_total:
         pdf.set_text_color(0,140,70)
         pdf.cell(0,8,"STATUS : PAID",ln=True)
+    elif amount_paid > 0:
+        pdf.set_text_color(210,120,0)
+        pdf.cell(0,8,"STATUS : PARTIALLY PAID",ln=True)
     else:
         pdf.set_text_color(200,40,40)
         pdf.cell(0,8,"STATUS : UNPAID",ln=True)

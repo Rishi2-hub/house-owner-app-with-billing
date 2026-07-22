@@ -6,12 +6,10 @@ Storage — this avoids requiring the paid Blaze plan.
 Trade-off: on Streamlit Community Cloud, uploaded photos/documents will
 still be lost on app restart, since Cloud's filesystem is ephemeral. If you
 mainly run this app on your own PC, local files persist normally there.
-If you later want photos/documents to survive Cloud restarts too, upgrade
-to the Blaze plan and swap save_upload() back to Firebase Storage.
 
 Requires a Firebase service account configured in Streamlit secrets under
-the [firebase] section (see secrets.toml.example). storage_bucket is no
-longer required/used in this version.
+the [firebase] section (see secrets.toml.example). storage_bucket is not
+required/used in this version.
 """
 
 import os
@@ -210,6 +208,12 @@ def get_tenant(tenant_id):
 # Bills
 # Document ID = "{tenant_id}_{year_ad}_{month_ad}" — enforces one bill per
 # tenant per month, equivalent to the old SQL UNIQUE constraint.
+#
+# Each bill also stores the ORIGINAL bs_year/bs_month the user selected in
+# the month picker. This is needed because BS months don't line up with AD
+# month boundaries, so recalculating the BS month later from year_ad/month_ad
+# alone can land on the wrong BS month (e.g. showing "Jestha" when the user
+# actually picked "Ashadh"). Storing it directly avoids that recalculation.
 # ---------------------------------------------------------------------------
 def _bill_doc_id(tenant_id, year_ad, month_ad):
     return f"{tenant_id}_{year_ad}_{month_ad}"
@@ -221,14 +225,20 @@ def upsert_bill(data):
         "tenant_id": data["tenant_id"],
         "year_ad": data["year_ad"],
         "month_ad": data["month_ad"],
+        "bs_year": data.get("bs_year"),
+        "bs_month": data.get("bs_month"),
         "rent_amount": data.get("rent_amount", 0),
-        "water_units": data.get("water_units", 0),
-        "water_rate": data.get("water_rate", 0),
+        "water_amount": data.get("water_amount", 0),
+        "previous_meter_reading": data.get("previous_meter_reading", 0),
+        "current_meter_reading": data.get("current_meter_reading", 0),
         "electricity_units": data.get("electricity_units", 0),
         "electricity_rate": data.get("electricity_rate", 0),
         "dustbin_amount": data.get("dustbin_amount", 0),
         "other_amount": data.get("other_amount", 0),
         "other_desc": data.get("other_desc"),
+        "advance_amount": data.get("advance_amount", 0),
+        "past_due_amount": data.get("past_due_amount", 0),
+        "amount_paid": data.get("amount_paid", 0),
         "paid": 1 if data.get("paid") else 0,
         "created_at": _now(),
     }, merge=True)
@@ -314,13 +324,59 @@ def get_bills_for_tenant(tenant_id):
 
 
 def bill_total(bill):
-    """Calculate total bill amount."""
+    """Total payable before applying the customer's payment."""
+    if bill is None:
+        return 0.0
+    return max(0.0, bill_current_charges(bill)
+        + (bill.get("past_due_amount") or 0)
+        - (bill.get("advance_amount") or 0)
+    )
+
+
+def water_charge(bill):
+    """Return the new fixed water price, with a fallback for legacy bills."""
+    if bill is None:
+        return 0.0
+    if "water_amount" in bill:
+        return bill.get("water_amount") or 0
+    return (bill.get("water_units") or 0) * (bill.get("water_rate") or 0)
+
+
+def bill_current_charges(bill):
+    """Charges created in this month, excluding past due and advance."""
     if bill is None:
         return 0.0
     return (
         (bill.get("rent_amount") or 0)
-        + (bill.get("water_units") or 0) * (bill.get("water_rate") or 0)
+        + water_charge(bill)
         + (bill.get("electricity_units") or 0) * (bill.get("electricity_rate") or 0)
         + (bill.get("dustbin_amount") or 0)
         + (bill.get("other_amount") or 0)
     )
+
+
+def bill_amount_paid(bill):
+    """Return actual payment, preserving the meaning of legacy paid bills."""
+    if bill is None:
+        return 0.0
+    if "amount_paid" in bill:
+        return bill.get("amount_paid") or 0
+    return bill_total(bill) if bill.get("paid") else 0.0
+
+
+def bill_due(bill):
+    return max(0.0, bill_total(bill) - bill_amount_paid(bill))
+
+
+def bill_credit(bill):
+    return max(0.0, bill_amount_paid(bill) - bill_total(bill))
+
+
+def bill_status(bill):
+    paid = bill_amount_paid(bill)
+    total = bill_total(bill)
+    if paid <= 0:
+        return "Due"
+    if paid < total:
+        return "Partially Paid"
+    return "Paid"
