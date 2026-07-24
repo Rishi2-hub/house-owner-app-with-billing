@@ -10,6 +10,7 @@ import base64
 import datetime
 
 import streamlit as st
+import nepali_datetime as nd
 
 from lib import db
 from lib import nepali_cal as cal
@@ -114,10 +115,20 @@ def format_pref_date(ad_date_str):
     return d.strftime("%d %B %Y")
 
 
+def days_in_bs_month(bs_year, bs_month):
+    """Return the actual number of days in a selected Nepali month."""
+    for day in range(32, 28, -1):
+        try:
+            nd.date(bs_year, bs_month, day)
+            return day
+        except Exception:
+            continue
+    return 30
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
-
 def page_dashboard():
     banner(
         "Ghar Saathi",
@@ -127,118 +138,55 @@ def page_dashboard():
     floors = db.get_floors()
     tenants = db.get_tenants()
 
-    # Month selection
     st.markdown("### Select month")
-
     bs_year, bs_month, year, month = month_selector("dashboard")
-
     st.caption(
-        f"Showing {cal.NEPALI_MONTHS[bs_month - 1]} {bs_year} BS · "
+        f"Showing {cal.NEPALI_MONTHS[bs_month-1]} {bs_year} BS · "
         f"{cal.english_month_label(year, month)}"
     )
-
     st.divider()
 
-    # Get bills for selected month
-    bills = db.get_bills_for_month(year, month)
-
-    # Calculate selected month's totals
-    total_billed = sum(
-        db.bill_total(bill)
-        for bill in bills
+    bills = db.get_bills_for_month(
+        year,
+        month,
     )
 
-    total_collected = sum(
-        db.bill_amount_paid(bill)
-        for bill in bills
-    )
+    total_billed = sum(db.bill_total(b) for b in bills)
+    total_collected = sum(db.bill_amount_paid(b) for b in bills)
+    total_due = sum(db.bill_due(b) for b in bills)
+    total_advance = sum((b.get("advance_amount") or 0) for b in bills)
 
-    total_due = sum(
-        db.bill_due(bill)
-        for bill in bills
-    )
-
-    total_advance = sum(
-        bill.get("advance_amount") or 0
-        for bill in bills
-    )
-
-    # Dashboard summary cards
     c1, c2, c3, c4, c5 = st.columns(5)
 
-    c1.metric(
-        "Floors",
-        len(floors),
-    )
-
-    c2.metric(
-        "Tenants",
-        len(tenants),
-    )
-
-    c3.metric(
-        "Collected",
-        money(total_collected),
-    )
-
-    c4.metric(
-        "Due",
-        money(total_due),
-    )
-
-    c5.metric(
-        "Advance",
-        money(total_advance),
-    )
+    c1.metric("Floors", len(floors))
+    c2.metric("Tenants", len(tenants))
+    c3.metric("Collected", money(total_collected))
+    c4.metric("Due", money(total_due))
+    c5.metric("Advance", money(total_advance))
 
     st.divider()
+    st.subheader(f"Bills · {cal.NEPALI_MONTHS[bs_month-1]} {bs_year}")
+    st.caption(f"Total payable for the selected month: {money(total_billed)}")
 
-    # Selected month heading
-    st.subheader(
-        f"Bills · {cal.NEPALI_MONTHS[bs_month - 1]} {bs_year}"
-    )
-
-    st.caption(
-        f"English month: {cal.english_month_label(year, month)}"
-    )
-
-    st.caption(
-        f"Total payable for the selected month: {money(total_billed)}"
-    )
-
-    # Selected month's bills
     if bills:
+
         rows = []
 
-        for bill in bills:
+        for b in bills:
             rows.append({
-                "Floor": bill.get("floor_name", ""),
-                "Tenant": bill.get("tenant_name", ""),
-                "Total Payable": money(
-                    db.bill_total(bill)
-                ),
-                "Paid": money(
-                    db.bill_amount_paid(bill)
-                ),
-                "Due": money(
-                    db.bill_due(bill)
-                ),
-                "Advance": money(
-                    bill.get("advance_amount") or 0
-                ),
-                "Status": db.bill_status(bill),
+                "Floor": b["floor_name"],
+                "Tenant": b["tenant_name"],
+                "Total Payable": money(db.bill_total(b)),
+                "Paid": money(db.bill_amount_paid(b)),
+                "Due": money(db.bill_due(b)),
+                "Advance": money(b.get("advance_amount") or 0),
+                "Status": db.bill_status(b),
             })
 
-        st.dataframe(
-            rows,
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(rows, use_container_width=True)
 
     else:
-        st.info(
-            "No bills recorded for the selected month."
-        )
+        st.info("No bills recorded for the selected month.")
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +267,14 @@ def tenant_form(floors_map, existing=None, key="new"):
                 break
 
     with st.form(f"tenant_form_{key}", clear_on_submit=not is_edit):
+
+        deposit_amount = st.number_input(
+            "Tenant Deposit Amount (Rs.)",
+            min_value=0.0,
+            step=500.0,
+            value=float(existing.get("deposit_amount", 0)) if is_edit else 0.0,
+            help="Security deposit kept for this tenant. It is separate from monthly advance payments.",
+        )
 
         c1, c2 = st.columns(2)
 
@@ -422,6 +378,7 @@ def tenant_form(floors_map, existing=None, key="new"):
                 "id_type": id_type,
                 "id_number": id_number.strip(),
                 "rent_amount": rent,
+                "deposit_amount": deposit_amount,
                 "move_in_date": move_in.isoformat(),
                 "notes": notes.strip(),
             }
@@ -532,6 +489,9 @@ def page_tenants():
 
             st.caption(
                 f"🏠 {floor_names.get(t['floor_id'],'-')} | Monthly Rent: {money(t['rent_amount'])}"
+            )
+            st.caption(
+                f"💰 Deposit Amount: {money(t.get('deposit_amount') or 0)}"
             )
 
             info = []
@@ -651,18 +611,12 @@ def page_tenants():
 # ---------------------------------------------------------------------------
 def month_selector(key_prefix):
     """
-    Select Nepali (BS) year and month.
-
-    By default, the previous completed Nepali month is selected because
-    monthly bills are prepared after the month has ended.
-
+    Select Nepali (BS) Year & Month.
     Returns:
         bs_year, bs_month, ad_year, ad_month
     """
-
     today_bs = cal.current_bs()
 
-    # Select previous completed Nepali month by default
     if today_bs.month == 1:
         default_bs_year = today_bs.year - 1
         default_bs_month = 12
@@ -670,35 +624,26 @@ def month_selector(key_prefix):
         default_bs_year = today_bs.year
         default_bs_month = today_bs.month - 1
 
-    years = list(
-        range(today_bs.year - 3, today_bs.year + 3)
-    )
-
-    default_year_index = years.index(default_bs_year)
+    years = list(range(today_bs.year - 3, today_bs.year + 3))
 
     c1, c2 = st.columns(2)
 
     bs_year = c1.selectbox(
         "Year (BS)",
         years,
-        index=default_year_index,
+        index=years.index(default_bs_year),
         key=f"{key_prefix}_year",
     )
 
     bs_month = c2.selectbox(
         "Month (BS)",
         list(range(1, 13)),
-        format_func=lambda selected_month: (
-            cal.NEPALI_MONTHS[selected_month - 1]
-        ),
+        format_func=lambda m: cal.NEPALI_MONTHS[m - 1],
         index=default_bs_month - 1,
         key=f"{key_prefix}_month",
     )
 
-    year, month = cal.ad_month_from_bs(
-        bs_year,
-        bs_month,
-    )
+    year, month = cal.ad_month_from_bs(bs_year, bs_month)
 
     return bs_year, bs_month, year, month
 
@@ -725,12 +670,83 @@ def page_bills():
     )
     st.caption(f"Nepali Month : {cal.NEPALI_MONTHS[bs_month-1]} {bs_year}")
 
+    # These controls stay outside the form so Streamlit reruns immediately.
+    month_days = days_in_bs_month(bs_year, bs_month)
+    saved_bill_type = (
+        existing.get("billing_type", "Full month")
+        if existing
+        else "Full month"
+    )
+    billing_type = st.radio(
+        "Rent calculation type",
+        ["Full month", "By date count"],
+        index=0 if saved_bill_type == "Full month" else 1,
+        horizontal=True,
+        key=f"billing_type_{tenant['id']}_{bs_year}_{bs_month}",
+    )
+
+    monthly_rent = float(tenant.get("rent_amount") or 0)
+    billing_start_day = 1
+    billing_end_day = month_days
+    billable_days = month_days
+
+    if billing_type == "By date count":
+        saved_start_day = (
+            existing.get("billing_start_day", 1)
+            if existing
+            else 1
+        )
+        saved_end_day = (
+            existing.get("billing_end_day", month_days)
+            if existing
+            else month_days
+        )
+        saved_start_day = 1 if saved_start_day is None else int(saved_start_day)
+        saved_end_day = month_days if saved_end_day is None else int(saved_end_day)
+        saved_start_day = min(max(saved_start_day, 1), month_days)
+        saved_end_day = min(max(saved_end_day, 1), month_days)
+
+        d1, d2 = st.columns(2)
+        billing_start_day = int(d1.number_input(
+            "Start day (BS)",
+            min_value=1,
+            max_value=month_days,
+            step=1,
+            value=saved_start_day,
+            key=f"start_day_{tenant['id']}_{bs_year}_{bs_month}",
+        ))
+        billing_end_day = int(d2.number_input(
+            "End day (BS)",
+            min_value=1,
+            max_value=month_days,
+            step=1,
+            value=saved_end_day,
+            key=f"end_day_{tenant['id']}_{bs_year}_{bs_month}",
+        ))
+        billable_days = max(0, billing_end_day - billing_start_day + 1)
+        rent = (monthly_rent / month_days) * billable_days
+        st.info(
+            f"Monthly rent: **{money(monthly_rent)}** | "
+            f"Days in month: **{month_days}** | "
+            f"Selected days: **{billing_start_day}–{billing_end_day}** | "
+            f"Billable days: **{billable_days}** | "
+            f"Calculated rent: **{money(rent)}**"
+        )
+    else:
+        rent = monthly_rent
+        st.info(
+            f"Full-month rent for {cal.NEPALI_MONTHS[bs_month-1]} "
+            f"{bs_year}: **{money(rent)}**"
+        )
+
     with st.form("bill_form"):
 
         c1, c2, c3 = st.columns(3)
-        rent = c1.number_input(
-            "Rent (Rs.)", min_value=0.0, step=500.0,
-            value=float(existing["rent_amount"]) if existing else float(tenant["rent_amount"]),
+        c1.number_input(
+            "Calculated rent (Rs.)",
+            min_value=0.0,
+            value=float(rent),
+            disabled=True,
         )
         dustbin = c2.number_input(
             "Dustbin / waste (Rs.)", min_value=0.0, step=50.0,
@@ -797,13 +813,20 @@ def page_bills():
             st.success(f"Extra customer credit: **{money(customer_credit)}**")
 
         if st.form_submit_button("Save bill", type="primary"):
-            if current_reading < previous_reading:
+            if billing_type == "By date count" and billing_end_day < billing_start_day:
+                st.error("End day cannot be earlier than the start day.")
+            elif current_reading < previous_reading:
                 st.error("Current meter reading cannot be lower than the previous reading.")
             else:
                 db.upsert_bill({
                     "tenant_id": tenant["id"], "year_ad": year, "month_ad": month,
                     "bs_year": bs_year, "bs_month": bs_month,
                     "rent_amount": rent, "water_amount": water_amount,
+                    "billing_type": billing_type,
+                    "billing_start_day": billing_start_day,
+                    "billing_end_day": billing_end_day,
+                    "billable_days": billable_days,
+                    "bs_month_days": month_days,
                     "previous_meter_reading": previous_reading,
                     "current_meter_reading": current_reading,
                     "electricity_units": elec_units, "electricity_rate": elec_rate,

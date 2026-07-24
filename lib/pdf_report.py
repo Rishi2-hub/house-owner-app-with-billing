@@ -142,6 +142,12 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
             tenant["move_in_date"],
         )
 
+    _kv_row(
+        pdf,
+        "Tenant Deposit",
+        _money(tenant.get("deposit_amount") or 0),
+    )
+
     pdf.ln(5)
 
     # ----------------------------
@@ -169,10 +175,20 @@ def generate_bill_receipt(bill, tenant, floor_name, bill_total):
         * (bill.get("electricity_rate") or 0)
     )
 
+    billing_type = bill.get("billing_type", "Full month")
+    if billing_type == "By date count":
+        rent_detail = (
+            f'{bill.get("billable_days") or 0} of '
+            f'{bill.get("bs_month_days") or 0} days '
+            f'({bill.get("billing_start_day")}-{bill.get("billing_end_day")})'
+        )
+    else:
+        rent_detail = "Full month"
+
     rows = [
         (
             "Monthly Rent",
-            "",
+            rent_detail,
             _money(bill.get("rent_amount", 0)),
         ),
         (
